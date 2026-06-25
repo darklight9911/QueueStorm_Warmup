@@ -1,0 +1,13 @@
+# Render Blueprint — one-click deploy of the Docker image.
+# In the Render dashboard: New + > Blueprint > point at this repo.
+services:
+  - type: web
+    name: queuestorm-ticket-sorter
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8000
