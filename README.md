@@ -47,6 +47,24 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Using the Makefile (shortcuts)
+
+A `Makefile` wraps the common tasks. Run `make` (or `make help`) to list them.
+
+| Command         | What it does                                                     |
+|-----------------|------------------------------------------------------------------|
+| `make install`  | Create `.venv` and install all dependencies                      |
+| `make run`      | Run the API locally on `:8000`                                   |
+| `make dev`      | Run locally with auto-reload                                     |
+| `make test`     | Run the full test suite                                          |
+| `make up`       | Build + start via Docker Compose (detached) and check health     |
+| `make smoke`    | Hit `/health` and a sample `/sort-ticket` on a running server    |
+| `make down`     | Stop and remove the Docker Compose stack                         |
+| `make logs`     | Follow container logs                                            |
+| `make clean`    | Remove Python/test caches                                        |
+
+Override tunables on the CLI, e.g. `make run PORT=9000`.
+
 ---
 
 ## API
