@@ -157,6 +157,33 @@ automated test (`test_safety_rule_summary_never_requests_secrets`).
 
 ---
 
+## Reliability & security
+
+The service is built to stay up and stay quiet about its internals:
+
+- **Resilient endpoint** — if classification ever raises, the request degrades to
+  a safe `other` / `low` response instead of a 500. One bad ticket can't take the
+  service down.
+- **Clean error contract** — unhandled errors and validation failures return
+  structured JSON (`{"error": "...", ...}`), never a stack trace.
+- **Request limits** — bodies over `MAX_BODY_BYTES` (64 KB) are rejected with
+  `413`; an over-length `message` is rejected with `422`. Cheap protection against
+  oversized / abusive payloads. Both are env-tunable.
+- **Security headers** on every response: `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
+- **Privacy-aware logging** — logs record the classification *outcome* (ticket id,
+  case, severity), **never the raw message**, which may contain personal data or the
+  very credentials (OTP/PIN) we are protecting.
+- **No secrets, non-root container, pinned dependencies.** `/docs` can be disabled
+  in production with `ENABLE_DOCS=false`.
+
+| Variable             | Default | Purpose                                   |
+|----------------------|---------|-------------------------------------------|
+| `MAX_BODY_BYTES`     | `65536` | Max request body size before `413`        |
+| `MAX_MESSAGE_LENGTH` | `10000` | Max `message` characters before `422`     |
+| `ENABLE_DOCS`        | `true`  | Set `false` to hide `/docs`, `/openapi.json` |
+| `LOG_LEVEL`          | `INFO`  | Logging verbosity                         |
+
 ## Public sample cases — verified
 
 | # | Message                                               | case_type                        | severity |

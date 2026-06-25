@@ -8,9 +8,15 @@ fields are produced by us and must always match the documented enums.
 
 from __future__ import annotations
 
+import os
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
+
+# Upper bounds keep a single request cheap to process and bound memory use.
+# Overridable via env so an operator can tune them without a code change.
+MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", "10000"))
+MAX_TICKET_ID_LENGTH = int(os.getenv("MAX_TICKET_ID_LENGTH", "200"))
 
 CaseType = Literal[
     "wrong_transfer",
@@ -31,8 +37,16 @@ Department = Literal[
 class TicketRequest(BaseModel):
     """Incoming CRM ticket. Only `ticket_id` and `message` are required."""
 
-    ticket_id: str = Field(..., description="Echoed back verbatim in the response.")
-    message: str = Field(..., description="Free-text customer complaint.")
+    ticket_id: str = Field(
+        ...,
+        max_length=MAX_TICKET_ID_LENGTH,
+        description="Echoed back verbatim in the response.",
+    )
+    message: str = Field(
+        ...,
+        max_length=MAX_MESSAGE_LENGTH,
+        description="Free-text customer complaint.",
+    )
     # Kept as plain strings on purpose — lenient on input, see module docstring.
     channel: Optional[str] = Field(
         default=None,
