@@ -6,16 +6,18 @@ Run locally:
 The container entrypoint binds to 0.0.0.0 and honours the $PORT env var so the
 same image works on Render, Railway, Fly, EC2, etc. with no code changes.
 
-Hardening
----------
+Hardening & scale
+-----------------
 * Resilient route: a classifier failure degrades to a safe `other` response
   instead of a 500, so one odd ticket can never take the endpoint down.
 * Global handlers: unhandled errors and validation failures return clean JSON,
   never a stack trace.
 * Request limits: oversized bodies are rejected early (413), and over-length
-  fields are rejected at validation (422) — cheap protection against abuse.
-* Security headers on every response; privacy-aware logging that records the
-  classification outcome but never the raw message (it may contain PII/secrets).
+  fields are rejected at validation (422).
+* Rate limiting: per-client fixed-window limiter (in-memory by default, Redis
+  when REDIS_URL is set) returns 429 + Retry-After; fails open; /health exempt.
+* Async routes + multi-worker serving for throughput; security headers and
+  privacy-aware logging (the raw message is never logged).
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from .classifier import (
     classify,
 )
 from .models import HealthResponse, TicketRequest, TicketResponse
+from .ratelimit import RateLimitResult, build_rate_limiter, get_client_ip
 
 SERVICE_NAME = "queuestorm-ticket-sorter"
 
@@ -45,14 +48,23 @@ _ENABLE_DOCS = os.getenv("ENABLE_DOCS", "true").strip().lower() != "false"
 _MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(64 * 1024)))  # 64 KB
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+# Rate limiting
+_RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() != "false"
+_RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "120"))
+_RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+_TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() != "false"
+_REDIS_URL = os.getenv("REDIS_URL") or None
+# Probes and the landing page must never be throttled.
+_RATE_LIMIT_EXEMPT = {"/health", "/"}
+
 logging.basicConfig(
     level=_LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("queuestorm")
 
-# Disabling the docs UI in production removes an unauthenticated surface and
-# stops broadcasting the API shape; keep it on by default for graders/dev.
+rate_limiter = build_rate_limiter(_RATE_LIMIT_REQUESTS, _RATE_LIMIT_WINDOW, _REDIS_URL)
+
 app = FastAPI(
     title="QueueStorm Ticket Sorter",
     description=(
@@ -75,25 +87,59 @@ _SECURITY_HEADERS = {
 }
 
 
+def _apply_security_headers(response) -> None:
+    for key, value in _SECURITY_HEADERS.items():
+        if key not in response.headers:
+            response.headers[key] = value
+
+
+def _apply_rate_headers(response, result: RateLimitResult) -> None:
+    response.headers["X-RateLimit-Limit"] = str(result.limit)
+    response.headers["X-RateLimit-Remaining"] = str(result.remaining)
+    response.headers["X-RateLimit-Reset"] = str(result.reset_after)
+
+
 # --------------------------------------------------------------------------- #
-# Middleware: body-size guard + security headers
+# Middleware: body-size guard + rate limiting + security headers
 # --------------------------------------------------------------------------- #
 @app.middleware("http")
 async def guard_and_harden(request: Request, call_next):
-    # Reject oversized payloads before doing any work (cheap DoS protection).
+    # 1) Reject oversized payloads before doing any work (cheap DoS protection).
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > _MAX_BODY_BYTES:
-        return JSONResponse(
+        response = JSONResponse(
             status_code=413,
             content={
                 "error": "payload_too_large",
                 "message": f"Request body exceeds the {_MAX_BODY_BYTES}-byte limit.",
             },
         )
+        _apply_security_headers(response)
+        return response
+
+    # 2) Rate limit per client (skip health/landing probes).
+    rate_result: RateLimitResult | None = None
+    if _RATE_LIMIT_ENABLED and request.url.path not in _RATE_LIMIT_EXEMPT:
+        client_ip = get_client_ip(request, _TRUST_PROXY_HEADERS)
+        rate_result = await rate_limiter.hit(client_ip)
+        if not rate_result.allowed:
+            response = JSONResponse(
+                status_code=429,
+                content={
+                    "error": "rate_limited",
+                    "message": "Too many requests. Please slow down and retry shortly.",
+                },
+            )
+            _apply_rate_headers(response, rate_result)
+            response.headers["Retry-After"] = str(rate_result.reset_after)
+            _apply_security_headers(response)
+            return response
+
+    # 3) Process the request, then stamp headers on the way out.
     response = await call_next(request)
-    for key, value in _SECURITY_HEADERS.items():
-        if key not in response.headers:
-            response.headers[key] = value
+    _apply_security_headers(response)
+    if rate_result is not None:
+        _apply_rate_headers(response, rate_result)
     return response
 
 
@@ -113,7 +159,6 @@ async def on_validation_error(request: Request, exc: RequestValidationError):
 
 @app.exception_handler(Exception)
 async def on_unhandled_error(request: Request, exc: Exception):
-    # Log the traceback server-side; never expose internals to the caller.
     logger.exception("unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
@@ -137,10 +182,10 @@ def _safe_fallback() -> Classification:
 
 
 # --------------------------------------------------------------------------- #
-# Routes
+# Routes (async to avoid threadpool overhead under high concurrency)
 # --------------------------------------------------------------------------- #
 @app.get("/", include_in_schema=False)
-def root() -> dict:
+async def root() -> dict:
     """Friendly landing payload pointing at the real endpoints."""
     return {
         "service": SERVICE_NAME,
@@ -154,13 +199,13 @@ def root() -> dict:
 
 
 @app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    """Liveness/readiness probe. Returns immediately."""
+async def health() -> HealthResponse:
+    """Liveness/readiness probe. Returns immediately and is never rate limited."""
     return HealthResponse(status="ok", service=SERVICE_NAME, version=__version__)
 
 
 @app.post("/sort-ticket", response_model=TicketResponse)
-def sort_ticket(ticket: TicketRequest) -> TicketResponse:
+async def sort_ticket(ticket: TicketRequest) -> TicketResponse:
     """Classify one CRM ticket and return the structured response."""
     try:
         result = classify(ticket.message, locale=ticket.locale)
@@ -169,7 +214,7 @@ def sort_ticket(ticket: TicketRequest) -> TicketResponse:
         result = _safe_fallback()
 
     # Privacy: record the outcome only — never the raw message, which may
-    # contain personal data or the very credentials we are trying to protect.
+    # contain personal data or the very credentials we are protecting.
     logger.info(
         "sorted ticket_id=%s case=%s severity=%s review=%s",
         ticket.ticket_id,

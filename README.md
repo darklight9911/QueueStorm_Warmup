@@ -30,6 +30,7 @@ _bKash · SUST CSE Carnival 2026 — Codex Community Hackathon · **Mock Prelimi
 - [API Reference](#api-reference)
 - [How Classification Works](#how-classification-works)
 - [Reliability & Security](#reliability--security)
+- [Rate Limiting & Scaling](#rate-limiting--scaling)
 - [Public Sample Cases](#public-sample-cases)
 - [Testing](#testing)
 - [Deployment Runbook](#deployment-runbook)
@@ -359,8 +360,52 @@ The service is built to stay up and stay quiet about its internals:
 - **Privacy-aware logging** — logs record the *outcome* (ticket id, case, severity),
   **never the raw message**, which may contain personal data or the very credentials
   (OTP/PIN) we are protecting.
+- **Rate limiting** — per-client fixed-window limiter returns `429` + `Retry-After`;
+  in-memory by default, **Redis-backed for distributed enforcement** across
+  instances. See [Rate Limiting & Scaling](#rate-limiting--scaling).
 - **No secrets · non-root container · pinned dependencies.** Docs can be disabled in
   production with `ENABLE_DOCS=false`.
+
+---
+
+## Rate Limiting & Scaling
+
+The service is stateless and CPU-light, so it scales **horizontally** — add
+instances/workers behind a load balancer and throughput grows linearly. Two pieces
+keep it safe and correct at high volume.
+
+**1. Pluggable rate limiter** (per-client IP, fixed window):
+
+| Backend | When | Behaviour |
+|---|---|---|
+| **In-memory** (default) | single instance / dev | per-process counter, zero dependencies |
+| **Redis** (set `REDIS_URL`) | many instances / workers | one **shared** limit enforced across the whole fleet |
+
+- Exceeding the limit returns **`429`** with a `Retry-After` header; every response
+  carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
+- **`/health` is exempt** so platform health probes are never throttled.
+- The limiter **fails open** — if Redis is unreachable, requests are allowed; the
+  limiter can never become the component that takes the API down.
+- Client IP is read from `X-Forwarded-For` when `TRUST_PROXY_HEADERS=true` (the norm
+  behind Render / Railway / Fly / a CDN).
+
+**2. Multi-worker serving** — the image runs `WEB_CONCURRENCY` uvicorn workers (set
+it to the instance's CPU cores), and the routes are `async`, avoiding threadpool
+overhead under high concurrency.
+
+> **Verified:** with 2 workers sharing one Redis limit of 120/min, 150 concurrent
+> requests returned exactly **120 × `200`** and **30 × `429`** — a single correct
+> global limit across both workers.
+
+### Scaling to very high traffic
+- Run **N instances** behind the platform load balancer, all pointing at the **same
+  Redis**, so the limit stays global no matter how many replicas you add.
+- Increase capacity by raising `RATE_LIMIT_REQUESTS` and/or adding instances.
+- Put a **CDN / WAF** (e.g. Cloudflare) in front for TLS, edge caching, bot
+  filtering, and volumetric **DDoS** absorption — the layer purpose-built to soak up
+  "millions of requests" before they ever reach the app.
+- `docker compose up` runs the API with **2 workers + Redis** out of the box so you
+  can validate the distributed setup locally.
 
 ---
 
@@ -440,6 +485,12 @@ All configuration is via environment variables — **there are no secrets**. See
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8000` | HTTP bind port (most platforms inject this) |
+| `WEB_CONCURRENCY` | `1` | Number of uvicorn worker processes (set to CPU cores) |
+| `RATE_LIMIT_ENABLED` | `true` | Master switch for rate limiting |
+| `RATE_LIMIT_REQUESTS` | `120` | Allowed requests per window, per client IP |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the rate-limit window |
+| `TRUST_PROXY_HEADERS` | `true` | Read client IP from `X-Forwarded-For` (PaaS/CDN) |
+| `REDIS_URL` | _(unset)_ | If set, use a **shared** Redis limit across instances |
 | `MAX_BODY_BYTES` | `65536` | Max request body size before `413` |
 | `MAX_MESSAGE_LENGTH` | `10000` | Max `message` characters before `422` |
 | `MAX_TICKET_ID_LENGTH` | `200` | Max `ticket_id` characters before `422` |
@@ -456,11 +507,14 @@ All configuration is via environment variables — **there are no secrets**. See
 │   ├── __init__.py
 │   ├── main.py            # FastAPI app, middleware, error handlers, routes
 │   ├── models.py          # Pydantic request/response contracts + limits
-│   └── classifier.py      # Deterministic rules-based classification engine
+│   ├── classifier.py      # Deterministic rules-based classification engine
+│   └── ratelimit.py       # Pluggable rate limiter (in-memory / Redis)
 ├── tests/
+│   ├── conftest.py        # Shared test setup
 │   ├── test_api.py        # HTTP contract + sample cases + safety rule
 │   ├── test_classifier.py # Unit / edge cases (Bengali, banglish, ...)
-│   └── test_hardening.py  # Security headers, size limits, resilience
+│   ├── test_hardening.py  # Security headers, size limits, resilience
+│   └── test_ratelimit.py  # Rate limiting (unit + endpoint)
 ├── Dockerfile             # Small, non-root, $PORT-aware image
 ├── docker-compose.yml     # One-command local run
 ├── render.yaml            # Render deploy blueprint

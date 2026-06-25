@@ -41,6 +41,10 @@ database, and requires no secrets or API keys.
 - **Request limits.** Oversized bodies are rejected with `413`
   (`MAX_BODY_BYTES`, default 64 KB) and over-length fields with `422`
   (`MAX_MESSAGE_LENGTH`, default 10,000 chars) — basic abuse/DoS protection.
+- **Rate limiting.** A per-client fixed-window limiter returns `429` + `Retry-After`
+  (`RATE_LIMIT_*`). In-memory by default, or a shared **Redis** limit across instances
+  when `REDIS_URL` is set. It **fails open**, so it can never take the API down, and
+  `/health` is exempt.
 - **Clean error contract.** Unhandled and validation errors return structured
   JSON, never a stack trace or internal details.
 - **Security headers** on every response: `X-Content-Type-Options: nosniff`,
@@ -54,8 +58,8 @@ database, and requires no secrets or API keys.
 
 - **Transport security (HTTPS/TLS)** is provided by the hosting platform
   (Render / Railway / Fly) or a reverse proxy in front of the service.
-- **Rate limiting** and **WAF/DDoS protection** are best handled at the platform
-  or CDN layer (e.g. Cloudflare), not in-process, since the service is designed to
-  scale to multiple stateless instances.
+- **WAF and volumetric DDoS protection** are best handled at the CDN/platform layer
+  (e.g. Cloudflare) in front of the service. The app provides per-client rate
+  limiting; edge filtering of large-scale attacks belongs upstream.
 - **Authentication** is not implemented: the endpoint performs classification only
   and persists no user data.
