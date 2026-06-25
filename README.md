@@ -9,9 +9,10 @@ _bKash · SUST CSE Carnival 2026 — Codex Community Hackathon · **Mock Prelimi
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
+[![CI](https://github.com/darklight9911/QueueStorm_Warmup/actions/workflows/ci.yml/badge.svg)](https://github.com/darklight9911/QueueStorm_Warmup/actions/workflows/ci.yml)
 ![LLM](https://img.shields.io/badge/LLM-not%20required-blueviolet)
 ![No Secrets](https://img.shields.io/badge/secrets-none-success)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 </div>
 
@@ -35,6 +36,8 @@ _bKash · SUST CSE Carnival 2026 — Codex Community Hackathon · **Mock Prelimi
 - [Configuration](#configuration)
 - [Project Layout](#project-layout)
 - [Submission Notes](#submission-notes)
+- [Security](#security)
+- [License](#license)
 
 ---
 
@@ -463,9 +466,12 @@ All configuration is via environment variables — **there are no secrets**. See
 ├── render.yaml            # Render deploy blueprint
 ├── Makefile               # Dev / test / Docker task runner
 ├── .devcontainer/         # VS Code "Reopen in Container" config
+├── .github/workflows/     # CI: runs the test suite on every push / PR
 ├── requirements.txt       # Runtime dependencies
 ├── requirements-dev.txt   # + test dependencies
 ├── .env.example           # Documented config knobs (no secrets)
+├── LICENSE                # MIT license
+├── SECURITY.md            # Security policy & posture
 └── README.md
 ```
 
@@ -479,6 +485,22 @@ All configuration is via environment variables — **there are no secrets**. See
 - **Deployment platform:** Docker image (Render blueprint included; portable to Railway / Fly / EC2 / Poridhi Lab).
 - **Known issues:** Classification is keyword-driven, so highly unusual phrasings may
   fall back to `other`; extending the keyword banks in `app/classifier.py` is trivial.
+
+---
+
+## Security
+
+The service stores no data and needs no secrets. Highlights: privacy-aware logging
+(never logs the raw message), the enforced safety rule, request-size limits, security
+headers, and a non-root container. See **[SECURITY.md](SECURITY.md)** for the full
+policy, threat model, and how to report a vulnerability.
+
+---
+
+## License
+
+Released under the **MIT License** — free to use, modify, and distribute with
+attribution. See **[LICENSE](LICENSE)**.
 
 <div align="center">
 
