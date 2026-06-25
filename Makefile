@@ -42,8 +42,8 @@ run: install ## Run the API locally on http://localhost:$(PORT)
 	$(BIN)/uvicorn app.main:app --host 0.0.0.0 --port $(PORT)
 
 .PHONY: dev
-dev: install ## Run the API locally with auto-reload (development)
-	$(BIN)/uvicorn app.main:app --host 0.0.0.0 --port $(PORT) --reload
+dev: install ## Run the API locally with auto-reload (development; rate limiting off)
+	RATE_LIMIT_ENABLED=false $(BIN)/uvicorn app.main:app --host 0.0.0.0 --port $(PORT) --reload
 
 .PHONY: test
 test: install ## Run the full test suite (pytest)
